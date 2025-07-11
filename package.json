@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "server": "node src/server/server.js",
-    "start": "concurrently \"npm run server\" \"npm run dev\"",
+    "server": "node --experimental-modules src/server/server.js",
+    "start": "concurrently \"npm run server\" \"npm run dev\" --kill-others-on-fail",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"

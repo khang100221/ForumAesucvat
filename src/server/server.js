@@ -16,14 +16,29 @@ const app = express();
 const PORT = 3001;
 const JWT_SECRET = 'aesucvat-secret-key-2024';
 
+// Ensure uploads directory exists
+const uploadsDir = join(__dirname, '../../uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  console.log('✅ Created uploads directory');
+}
+
 // Database setup
 const dbPath = join(__dirname, '../../database.db');
+console.log('📁 Database path:', dbPath);
+
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
-    console.error('Error opening database:', err);
+    console.error('❌ Error opening database:', err);
+    process.exit(1);
   } else {
     console.log('✅ Connected to SQLite database');
   }
+});
+
+// Handle database connection errors
+db.on('error', (err) => {
+  console.error('❌ Database error:', err);
 });
 
 // Initialize database
@@ -204,17 +219,11 @@ const initializeDatabase = () => {
 
 // Middleware
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: ['http://localhost:5173', 'https://localhost:5173'],
   credentials: true
 }));
 app.use(express.json());
-app.use('/uploads', express.static(join(__dirname, '../../uploads')));
-
-// Create uploads directory
-const uploadsDir = join(__dirname, '../../uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
+app.use('/uploads', express.static(uploadsDir));
 
 // Multer configuration
 const storage = multer.diskStorage({
@@ -705,13 +714,36 @@ app.put('/api/admin/posts/:id/pin', authenticateToken, (req, res) => {
 
 // Initialize database and start server
 initializeDatabase().then(() => {
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 AESUCVAT Forum Server running on http://localhost:${PORT}`);
     console.log(`📊 Database: SQLite (database.db)`);
     console.log(`🔐 Admin credentials: admin / admin123`);
     console.log(`🛡️  Moderator credentials: moderator / mod123`);
     console.log(`✅ All APIs ready!`);
   });
+  
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`❌ Port ${PORT} is already in use. Please close other applications using this port.`);
+      process.exit(1);
+    } else {
+      console.error('❌ Server error:', err);
+    }
+  });
 }).catch(err => {
   console.error('❌ Failed to initialize database:', err);
+  process.exit(1);
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\n🛑 Shutting down server...');
+  db.close((err) => {
+    if (err) {
+      console.error('❌ Error closing database:', err);
+    } else {
+      console.log('✅ Database connection closed');
+    }
+    process.exit(0);
+  });
 });
