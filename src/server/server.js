@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import db, { initializeDatabase } from '../database/init.js';
+import sqlite3 from 'sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -16,51 +16,229 @@ const app = express();
 const PORT = 3001;
 const JWT_SECRET = 'aesucvat-secret-key-2024';
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use('/uploads', express.static(join(__dirname, '../../uploads')));
-
-// Ensure directories exist
+// Ensure uploads directory exists
 const uploadsDir = join(__dirname, '../../uploads');
-const avatarsDir = join(uploadsDir, 'avatars');
-const attachmentsDir = join(uploadsDir, 'attachments');
-const downloadsDir = join(uploadsDir, 'downloads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  console.log('✅ Created uploads directory');
+}
 
-[uploadsDir, avatarsDir, attachmentsDir, downloadsDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+// Database setup
+const dbPath = join(__dirname, '../../database.db');
+console.log('📁 Database path:', dbPath);
+
+const db = new sqlite3.Database(dbPath, (err) => {
+  if (err) {
+    console.error('❌ Error opening database:', err);
+    process.exit(1);
+  } else {
+    console.log('✅ Connected to SQLite database');
   }
 });
 
-// Configure multer for different file types
+// Handle database connection errors
+db.on('error', (err) => {
+  console.error('❌ Database error:', err);
+});
+
+// Initialize database
+const initializeDatabase = () => {
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
+      // Users table
+      db.run(`CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        role TEXT DEFAULT 'user',
+        avatar TEXT,
+        status TEXT DEFAULT 'offline',
+        minecraft_username TEXT,
+        bio TEXT,
+        join_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_active DATETIME DEFAULT CURRENT_TIMESTAMP,
+        post_count INTEGER DEFAULT 0,
+        reputation INTEGER DEFAULT 0,
+        banned INTEGER DEFAULT 0,
+        ban_reason TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`);
+
+      // Categories table
+      db.run(`CREATE TABLE IF NOT EXISTS categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        icon TEXT,
+        color TEXT,
+        parent_id INTEGER,
+        sort_order INTEGER DEFAULT 0,
+        is_download_category INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`);
+
+      // Posts table
+      db.run(`CREATE TABLE IF NOT EXISTS posts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        category_id INTEGER NOT NULL,
+        pinned INTEGER DEFAULT 0,
+        locked INTEGER DEFAULT 0,
+        views INTEGER DEFAULT 0,
+        attachments TEXT,
+        is_ticket INTEGER DEFAULT 0,
+        ticket_status TEXT DEFAULT 'open',
+        priority TEXT DEFAULT 'normal',
+        solved INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (category_id) REFERENCES categories(id)
+      )`);
+
+      // Comments table
+      db.run(`CREATE TABLE IF NOT EXISTS comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        content TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        post_id INTEGER NOT NULL,
+        parent_id INTEGER,
+        hidden INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (post_id) REFERENCES posts(id)
+      )`);
+
+      // Reactions table
+      db.run(`CREATE TABLE IF NOT EXISTS reactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        post_id INTEGER,
+        comment_id INTEGER,
+        emoji TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (post_id) REFERENCES posts(id)
+      )`);
+
+      // Downloads table
+      db.run(`CREATE TABLE IF NOT EXISTS downloads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        file_path TEXT NOT NULL,
+        file_size INTEGER,
+        category TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        downloads INTEGER DEFAULT 0,
+        version TEXT,
+        minecraft_version TEXT,
+        featured INTEGER DEFAULT 0,
+        approved INTEGER DEFAULT 1,
+        tags TEXT,
+        screenshots TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      )`);
+
+      // Servers table
+      db.run(`CREATE TABLE IF NOT EXISTS servers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        ip TEXT NOT NULL,
+        port INTEGER DEFAULT 25565,
+        version TEXT,
+        type TEXT,
+        online_players INTEGER DEFAULT 0,
+        max_players INTEGER DEFAULT 20,
+        status TEXT DEFAULT 'online',
+        website TEXT,
+        discord TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`);
+
+      // Notifications table
+      db.run(`CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        read INTEGER DEFAULT 0,
+        related_id INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      )`);
+
+      // Insert default data
+      db.run(`INSERT OR IGNORE INTO categories (name, description, icon, color, sort_order) VALUES 
+        ('Thảo luận chung', 'Nơi thảo luận về Minecraft và mọi thứ khác', '💬', '#4CAF50', 1),
+        ('Hướng dẫn', 'Các hướng dẫn và tips hữu ích', '📚', '#2196F3', 2),
+        ('Showcase', 'Khoe build và thành tựu của bạn', '🏆', '#FF9800', 3),
+        ('Server', 'Thông tin về server và tuyển member', '🏰', '#9C27B0', 4),
+        ('Báo lỗi', 'Báo cáo lỗi và vấn đề', '🐛', '#F44336', 5),
+        ('Hỗ trợ', 'Cần hỗ trợ? Hỏi tại đây!', '🆘', '#795548', 6)`);
+
+      // Insert default servers
+      db.run(`INSERT OR IGNORE INTO servers (name, description, ip, port, version, type, online_players, max_players) VALUES 
+        ('AESUCVAT Survival', 'Server survival chính thức của AESUCVAT', 'play.aesucvat.com', 25565, '1.20.4', 'survival', 45, 100),
+        ('AESUCVAT Creative', 'Server creative để build tự do', 'creative.aesucvat.com', 25565, '1.20.4', 'creative', 23, 50),
+        ('AESUCVAT Skyblock', 'Server skyblock thử thách', 'skyblock.aesucvat.com', 25565, '1.20.4', 'skyblock', 67, 80)`);
+
+      // Create admin user
+      const adminPassword = bcrypt.hashSync('admin123', 10);
+      db.run(`INSERT OR IGNORE INTO users (username, email, password, role, minecraft_username, bio) VALUES 
+        ('admin', 'admin@aesucvat.com', ?, 'admin', 'AdminAESUCVAT', 'Quản trị viên chính của diễn đàn AESUCVAT')`, [adminPassword]);
+
+      // Create moderator
+      const modPassword = bcrypt.hashSync('mod123', 10);
+      db.run(`INSERT OR IGNORE INTO users (username, email, password, role, minecraft_username, bio) VALUES 
+        ('moderator', 'mod@aesucvat.com', ?, 'moderator', 'ModAESUCVAT', 'Điều hành viên của diễn đàn')`, [modPassword]);
+
+      // Insert sample downloads
+      db.run(`INSERT OR IGNORE INTO downloads (name, description, file_path, file_size, category, user_id, version, minecraft_version, featured, tags) VALUES 
+        ('OptiFine HD', 'Mod tối ưu hóa đồ họa và hiệu suất cho Minecraft', 'downloads/optifine.jar', 2048000, 'mods', 1, '1.20.4', '1.20.4', 1, 'optimization,graphics'),
+        ('Faithful 32x', 'Resource pack nâng cấp texture lên 32x32', 'downloads/faithful.zip', 15360000, 'packs', 1, '1.20.4', '1.20.4', 1, 'texture,faithful'),
+        ('SEUS PTGI', 'Shader pack với ray tracing đẹp mắt', 'downloads/seus.zip', 5120000, 'shaders', 1, '1.20.4', '1.20.4', 1, 'raytracing,realistic'),
+        ('All The Mods 9', 'Modpack khổng lồ với hơn 400 mods', 'downloads/atm9.zip', 512000000, 'modpacks', 1, '0.2.44', '1.20.1', 1, 'kitchen-sink,tech,magic')`);
+
+      // Insert sample posts
+      db.run(`INSERT OR IGNORE INTO posts (title, content, user_id, category_id, views, pinned) VALUES 
+        ('Chào mừng đến với AESUCVAT!', 'Xin chào tất cả mọi người! Đây là bài viết chào mừng đầu tiên trên diễn đàn AESUCVAT. Hãy cùng nhau xây dựng một cộng đồng Minecraft tuyệt vời!', 1, 1, 156, 1),
+        ('Hướng dẫn cài đặt OptiFine', 'Trong bài viết này, mình sẽ hướng dẫn các bạn cách cài đặt OptiFine để tối ưu hóa Minecraft...', 1, 2, 89, 0),
+        ('Showcase: Lâu đài Medieval', 'Mình vừa hoàn thành một lâu đài medieval khổng lồ sau 3 tháng xây dựng. Hãy cùng xem nhé!', 2, 3, 234, 0)`);
+
+      resolve();
+    });
+  });
+};
+
+// Middleware
+app.use(cors({
+  origin: ['http://localhost:5173', 'https://localhost:5173'],
+  credentials: true
+}));
+app.use(express.json());
+app.use('/uploads', express.static(uploadsDir));
+
+// Multer configuration
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    let dest = uploadsDir;
-    if (req.route.path.includes('avatar')) dest = avatarsDir;
-    else if (req.route.path.includes('downloads')) dest = downloadsDir;
-    else dest = attachmentsDir;
-    cb(null, dest);
+    cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const extension = file.originalname.split('.').pop();
-    cb(null, `${uniqueSuffix}.${extension}`);
+    cb(null, uniqueSuffix + '-' + file.originalname);
   }
 });
 
 const upload = multer({ 
   storage,
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = ['.zip', '.jar', '.png', '.jpg', '.jpeg', '.json', '.cfg', '.txt', '.mcpack', '.mcworld', '.mcaddon'];
-    const ext = '.' + file.originalname.split('.').pop().toLowerCase();
-    if (allowedTypes.includes(ext)) {
-      cb(null, true);
-    } else {
-      cb(new Error('File type not allowed'));
-    }
-  },
-  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB
 });
 
 // Auth middleware
@@ -81,25 +259,10 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Permission check middleware
-const checkPermission = (permission) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
-
-    db.get(
-      'SELECT * FROM role_permissions WHERE role = ? AND permission = ?',
-      [req.user.role, permission],
-      (err, perm) => {
-        if (err || !perm) {
-          return res.status(403).json({ error: 'Insufficient permissions' });
-        }
-        next();
-      }
-    );
-  };
-};
+// Routes
+app.get('/api/test', (req, res) => {
+  res.json({ message: 'Server is running!' });
+});
 
 // Auth routes
 app.post('/api/register', async (req, res) => {
@@ -136,7 +299,8 @@ app.post('/api/register', async (req, res) => {
             username, 
             email, 
             role: 'user',
-            minecraft_username: minecraft_username || username
+            minecraft_username: minecraft_username || username,
+            status: 'online'
           } 
         });
       }
@@ -186,7 +350,8 @@ app.post('/api/login', async (req, res) => {
             minecraft_username: user.minecraft_username,
             bio: user.bio,
             reputation: user.reputation,
-            post_count: user.post_count
+            post_count: user.post_count,
+            status: 'online'
           } 
         });
       }
@@ -201,50 +366,6 @@ app.post('/api/logout', authenticateToken, (req, res) => {
   res.json({ message: 'Logged out successfully' });
 });
 
-// User routes
-app.get('/api/users/profile/:id', (req, res) => {
-  const { id } = req.params;
-  
-  db.get(
-    'SELECT id, username, email, role, avatar, minecraft_username, bio, reputation, post_count, join_date, last_active, status FROM users WHERE id = ?',
-    [id],
-    (err, user) => {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      
-      res.json(user);
-    }
-  );
-});
-
-app.put('/api/users/profile', authenticateToken, upload.single('avatar'), (req, res) => {
-  const { bio, minecraft_username } = req.body;
-  const avatar = req.file ? `avatars/${req.file.filename}` : null;
-  
-  let updateQuery = 'UPDATE users SET bio = ?, minecraft_username = ?';
-  let params = [bio, minecraft_username];
-  
-  if (avatar) {
-    updateQuery += ', avatar = ?';
-    params.push(avatar);
-  }
-  
-  updateQuery += ' WHERE id = ?';
-  params.push(req.user.id);
-  
-  db.run(updateQuery, params, function(err) {
-    if (err) {
-      return res.status(500).json({ error: 'Database error' });
-    }
-    res.json({ message: 'Profile updated successfully' });
-  });
-});
-
 // Categories routes
 app.get('/api/categories', (req, res) => {
   db.all('SELECT * FROM categories ORDER BY sort_order, name', (err, categories) => {
@@ -253,21 +374,6 @@ app.get('/api/categories', (req, res) => {
     }
     res.json(categories);
   });
-});
-
-app.post('/api/categories', authenticateToken, checkPermission('manage_categories'), (req, res) => {
-  const { name, description, icon, color, parent_id, is_download_category } = req.body;
-  
-  db.run(
-    'INSERT INTO categories (name, description, icon, color, parent_id, is_download_category) VALUES (?, ?, ?, ?, ?, ?)',
-    [name, description, icon, color, parent_id || null, is_download_category || 0],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ id: this.lastID, message: 'Category created successfully' });
-    }
-  );
 });
 
 // Posts routes
@@ -314,6 +420,7 @@ app.get('/api/posts', (req, res) => {
   
   db.all(query, params, (err, posts) => {
     if (err) {
+      console.error('Database error:', err);
       return res.status(500).json({ error: 'Database error' });
     }
     res.json(posts);
@@ -372,7 +479,7 @@ app.get('/api/posts/:id', (req, res) => {
 
 app.post('/api/posts', authenticateToken, upload.array('attachments'), (req, res) => {
   const { title, content, category_id, is_ticket, priority } = req.body;
-  const attachments = req.files ? req.files.map(file => `attachments/${file.filename}`) : [];
+  const attachments = req.files ? req.files.map(file => file.filename) : [];
   
   if (!title || !content || !category_id) {
     return res.status(400).json({ error: 'Title, content, and category are required' });
@@ -383,6 +490,7 @@ app.post('/api/posts', authenticateToken, upload.array('attachments'), (req, res
     [title, content, req.user.id, category_id, JSON.stringify(attachments), is_ticket || 0, priority || 'normal'],
     function(err) {
       if (err) {
+        console.error('Database error:', err);
         return res.status(500).json({ error: 'Database error' });
       }
       
@@ -390,43 +498,6 @@ app.post('/api/posts', authenticateToken, upload.array('attachments'), (req, res
       db.run('UPDATE users SET post_count = post_count + 1 WHERE id = ?', [req.user.id]);
       
       res.json({ id: this.lastID, message: 'Post created successfully' });
-    }
-  );
-});
-
-app.put('/api/posts/:id', authenticateToken, (req, res) => {
-  const { id } = req.params;
-  const { title, content, solved } = req.body;
-  
-  db.run(
-    'UPDATE posts SET title = ?, content = ?, solved = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
-    [title, content, solved || 0, id, req.user.id],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'Post not found or unauthorized' });
-      }
-      res.json({ message: 'Post updated successfully' });
-    }
-  );
-});
-
-app.delete('/api/posts/:id', authenticateToken, (req, res) => {
-  const { id } = req.params;
-  
-  db.run(
-    'DELETE FROM posts WHERE id = ? AND (user_id = ? OR ? IN ("admin", "moderator"))',
-    [id, req.user.id, req.user.role],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'Post not found or unauthorized' });
-      }
-      res.json({ message: 'Post deleted successfully' });
     }
   );
 });
@@ -447,22 +518,6 @@ app.post('/api/comments', authenticateToken, (req, res) => {
         return res.status(500).json({ error: 'Database error' });
       }
       res.json({ id: this.lastID, message: 'Comment created successfully' });
-    }
-  );
-});
-
-app.put('/api/comments/:id/hide', authenticateToken, checkPermission('manage_posts'), (req, res) => {
-  const { id } = req.params;
-  const { hidden } = req.body;
-  
-  db.run(
-    'UPDATE comments SET hidden = ? WHERE id = ?',
-    [hidden ? 1 : 0, id],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ message: 'Comment updated successfully' });
     }
   );
 });
@@ -522,29 +577,23 @@ app.get('/api/downloads', (req, res) => {
     SELECT d.*, u.username, u.minecraft_username
     FROM downloads d
     JOIN users u ON d.user_id = u.id
+    WHERE d.approved = 1
   `;
   
-  const conditions = [];
   const params = [];
   
   if (category) {
-    conditions.push('d.category = ?');
+    query += ' AND d.category = ?';
     params.push(category);
   }
   
   if (search) {
-    conditions.push('(d.name LIKE ? OR d.description LIKE ?)');
+    query += ' AND (d.name LIKE ? OR d.description LIKE ?)';
     params.push(`%${search}%`, `%${search}%`);
   }
   
   if (featured) {
-    conditions.push('d.featured = 1');
-  }
-  
-  conditions.push('d.approved = 1');
-  
-  if (conditions.length > 0) {
-    query += ' WHERE ' + conditions.join(' AND ');
+    query += ' AND d.featured = 1';
   }
   
   query += ' ORDER BY d.featured DESC, d.created_at DESC LIMIT ? OFFSET ?';
@@ -558,46 +607,13 @@ app.get('/api/downloads', (req, res) => {
   });
 });
 
-app.post('/api/downloads', authenticateToken, upload.single('file'), (req, res) => {
-  const { name, description, category, version, minecraft_version, tags } = req.body;
-  
-  if (!req.file) {
-    return res.status(400).json({ error: 'File is required' });
-  }
-  
-  if (!name || !description || !category) {
-    return res.status(400).json({ error: 'Name, description, and category are required' });
-  }
-  
-  db.run(
-    'INSERT INTO downloads (name, description, file_path, file_size, category, user_id, version, minecraft_version, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [name, description, `downloads/${req.file.filename}`, req.file.size, category, req.user.id, version, minecraft_version, tags],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ id: this.lastID, message: 'Download created successfully' });
-    }
-  );
-});
-
-app.get('/api/downloads/:id/download', (req, res) => {
-  const { id } = req.params;
-  
-  db.get('SELECT * FROM downloads WHERE id = ? AND approved = 1', [id], (err, download) => {
+// Servers routes
+app.get('/api/servers', (req, res) => {
+  db.all('SELECT * FROM servers ORDER BY created_at DESC', (err, servers) => {
     if (err) {
       return res.status(500).json({ error: 'Database error' });
     }
-    
-    if (!download) {
-      return res.status(404).json({ error: 'Download not found' });
-    }
-    
-    // Update download count
-    db.run('UPDATE downloads SET downloads = downloads + 1 WHERE id = ?', [id]);
-    
-    const filePath = join(__dirname, '../../uploads', download.file_path);
-    res.download(filePath, download.name);
+    res.json(servers);
   });
 });
 
@@ -615,33 +631,39 @@ app.get('/api/notifications', authenticateToken, (req, res) => {
   );
 });
 
-app.put('/api/notifications/:id/read', authenticateToken, (req, res) => {
-  const { id } = req.params;
+// Stats routes
+app.get('/api/stats', (req, res) => {
+  const stats = {};
   
-  db.run(
-    'UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?',
-    [id, req.user.id],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ message: 'Notification marked as read' });
-    }
-  );
-});
-
-// Servers routes
-app.get('/api/servers', (req, res) => {
-  db.all('SELECT * FROM servers ORDER BY created_at DESC', (err, servers) => {
-    if (err) {
-      return res.status(500).json({ error: 'Database error' });
-    }
-    res.json(servers);
+  db.get('SELECT COUNT(*) as count FROM users', (err, result) => {
+    if (err) return res.status(500).json({ error: 'Database error' });
+    stats.users = result.count;
+    
+    db.get('SELECT COUNT(*) as count FROM posts', (err, result) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      stats.posts = result.count;
+      
+      db.get('SELECT COUNT(*) as count FROM downloads WHERE approved = 1', (err, result) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        stats.downloads = result.count;
+        
+        db.get('SELECT COUNT(*) as count FROM users WHERE status = "online"', (err, result) => {
+          if (err) return res.status(500).json({ error: 'Database error' });
+          stats.online = result.count;
+          
+          res.json(stats);
+        });
+      });
+    });
   });
 });
 
 // Admin routes
-app.get('/api/admin/users', authenticateToken, checkPermission('manage_users'), (req, res) => {
+app.get('/api/admin/users', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'moderator') {
+    return res.status(403).json({ error: 'Insufficient permissions' });
+  }
+  
   db.all('SELECT id, username, email, role, status, minecraft_username, post_count, reputation, banned, ban_reason, created_at, last_active FROM users ORDER BY created_at DESC', (err, users) => {
     if (err) {
       return res.status(500).json({ error: 'Database error' });
@@ -650,7 +672,11 @@ app.get('/api/admin/users', authenticateToken, checkPermission('manage_users'), 
   });
 });
 
-app.put('/api/admin/users/:id', authenticateToken, checkPermission('manage_users'), (req, res) => {
+app.put('/api/admin/users/:id', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Insufficient permissions' });
+  }
+  
   const { id } = req.params;
   const { role, banned, ban_reason } = req.body;
   
@@ -666,7 +692,11 @@ app.put('/api/admin/users/:id', authenticateToken, checkPermission('manage_users
   );
 });
 
-app.put('/api/admin/posts/:id/pin', authenticateToken, checkPermission('pin_posts'), (req, res) => {
+app.put('/api/admin/posts/:id/pin', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'moderator') {
+    return res.status(403).json({ error: 'Insufficient permissions' });
+  }
+  
   const { id } = req.params;
   const { pinned } = req.body;
   
@@ -682,77 +712,38 @@ app.put('/api/admin/posts/:id/pin', authenticateToken, checkPermission('pin_post
   );
 });
 
-app.put('/api/admin/posts/:id/lock', authenticateToken, checkPermission('lock_posts'), (req, res) => {
-  const { id } = req.params;
-  const { locked } = req.body;
-  
-  db.run(
-    'UPDATE posts SET locked = ? WHERE id = ?',
-    [locked ? 1 : 0, id],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ message: 'Post lock status updated' });
-    }
-  );
-});
-
-app.put('/api/admin/downloads/:id/approve', authenticateToken, checkPermission('manage_downloads'), (req, res) => {
-  const { id } = req.params;
-  const { approved, featured } = req.body;
-  
-  db.run(
-    'UPDATE downloads SET approved = ?, featured = ? WHERE id = ?',
-    [approved ? 1 : 0, featured ? 1 : 0, id],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ message: 'Download status updated' });
-    }
-  );
-});
-
-// Statistics routes
-app.get('/api/stats', (req, res) => {
-  const stats = {};
-  
-  // Get user count
-  db.get('SELECT COUNT(*) as count FROM users', (err, result) => {
-    if (err) return res.status(500).json({ error: 'Database error' });
-    stats.users = result.count;
-    
-    // Get post count
-    db.get('SELECT COUNT(*) as count FROM posts', (err, result) => {
-      if (err) return res.status(500).json({ error: 'Database error' });
-      stats.posts = result.count;
-      
-      // Get download count
-      db.get('SELECT COUNT(*) as count FROM downloads WHERE approved = 1', (err, result) => {
-        if (err) return res.status(500).json({ error: 'Database error' });
-        stats.downloads = result.count;
-        
-        // Get online users
-        db.get('SELECT COUNT(*) as count FROM users WHERE status = "online"', (err, result) => {
-          if (err) return res.status(500).json({ error: 'Database error' });
-          stats.online = result.count;
-          
-          res.json(stats);
-        });
-      });
-    });
-  });
-});
-
 // Initialize database and start server
 initializeDatabase().then(() => {
-  app.listen(PORT, () => {
-    console.log(`🚀 AESUCVAT Forum Server running on port ${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 AESUCVAT Forum Server running on http://localhost:${PORT}`);
     console.log(`📊 Database: SQLite (database.db)`);
     console.log(`🔐 Admin credentials: admin / admin123`);
     console.log(`🛡️  Moderator credentials: moderator / mod123`);
+    console.log(`✅ All APIs ready!`);
+  });
+  
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`❌ Port ${PORT} is already in use. Please close other applications using this port.`);
+      process.exit(1);
+    } else {
+      console.error('❌ Server error:', err);
+    }
   });
 }).catch(err => {
-  console.error('Failed to initialize database:', err);
+  console.error('❌ Failed to initialize database:', err);
+  process.exit(1);
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\n🛑 Shutting down server...');
+  db.close((err) => {
+    if (err) {
+      console.error('❌ Error closing database:', err);
+    } else {
+      console.log('✅ Database connection closed');
+    }
+    process.exit(0);
+  });
 });
