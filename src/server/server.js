@@ -8,6 +8,7 @@ import { dirname, join } from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import sqlite3 from 'sqlite3';
+import path from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -224,6 +225,12 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use('/uploads', express.static(uploadsDir));
+
+// Serve static files from dist directory (for production)
+const distPath = path.join(__dirname, '../../dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+}
 
 // Multer configuration
 const storage = multer.diskStorage({
