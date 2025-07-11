@@ -719,6 +719,28 @@ app.put('/api/admin/posts/:id/pin', authenticateToken, (req, res) => {
   );
 });
 
+// Catch-all handler: send back React's index.html file for any non-API routes
+app.get('*', (req, res) => {
+  // Don't handle API routes
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'API endpoint not found' });
+  }
+  
+  const distPath = path.join(__dirname, '../../dist');
+  const indexPath = path.join(distPath, 'index.html');
+  
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(200).json({ 
+      message: 'AESUCVAT Forum Backend Server is running!',
+      status: 'Server OK',
+      frontend: 'Please access the frontend at http://localhost:5173',
+      api: 'API available at /api/*'
+    });
+  }
+});
+
 // Initialize database and start server
 initializeDatabase().then(() => {
   const server = app.listen(PORT, '0.0.0.0', () => {

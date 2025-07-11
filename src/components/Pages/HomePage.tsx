@@ -52,38 +52,28 @@ const HomePage: React.FC = () => {
     try {
       setLoading(true);
       
-      // Test server connection first
-      const testResponse = await fetch('http://localhost:3001/api/test');
-      if (!testResponse.ok) {
-        throw new Error('Server not responding');
-      }
-      
       // Fetch recent posts
-      const postsResponse = await fetch('http://localhost:3001/api/posts?limit=5');
+      const postsResponse = await fetch('/api/posts?limit=5');
       if (postsResponse.ok) {
         const postsData = await postsResponse.json();
         setRecentPosts(postsData);
       }
 
       // Fetch featured downloads
-      const downloadsResponse = await fetch('http://localhost:3001/api/downloads?featured=1&limit=4');
+      const downloadsResponse = await fetch('/api/downloads?featured=1&limit=4');
       if (downloadsResponse.ok) {
         const downloadsData = await downloadsResponse.json();
         setFeaturedDownloads(downloadsData);
       }
 
       // Fetch stats
-      const statsResponse = await fetch('http://localhost:3001/api/stats');
+      const statsResponse = await fetch('/api/stats');
       if (statsResponse.ok) {
         const statsData = await statsResponse.json();
         setStats(statsData);
       }
     } catch (error) {
       console.error('Error fetching data:', error);
-      // Show user-friendly error message
-      if (error instanceof TypeError && error.message.includes('fetch')) {
-        console.error('❌ Cannot connect to server. Please ensure the backend server is running on port 3001.');
-      }
     } finally {
       setLoading(false);
     }
