@@ -5,8 +5,6 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "server": "node --experimental-modules src/server/server.js",
-    "start": "concurrently \"npm run server\" \"npm run dev\" --kill-others-on-fail",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
@@ -37,7 +35,6 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.18",
-    "concurrently": "^9.2.0",
     "eslint": "^9.9.1",
     "eslint-plugin-react-hooks": "^5.1.0-rc.0",
     "eslint-plugin-react-refresh": "^0.4.11",
