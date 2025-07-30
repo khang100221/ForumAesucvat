@@ -35,6 +35,12 @@ try {
 
 const db = new Database('./database.sqlite');
 
+// Tối ưu database performance
+db.pragma('journal_mode = WAL');
+db.pragma('synchronous = NORMAL');
+db.pragma('cache_size = -64000'); // 64MB cache
+db.pragma('temp_store = MEMORY');
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
@@ -110,6 +116,8 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_status ON accounts (status);
   CREATE INDEX IF NOT EXISTS idx_uploaded_at ON accounts (uploaded_at);
+  CREATE INDEX IF NOT EXISTS idx_history_user ON history (userId);
+  CREATE INDEX IF NOT EXISTS idx_history_time ON history (time);
 `);
 
 try {
@@ -137,6 +145,11 @@ const client = new Client({
 client.commands = new Collection();
 const interactionCooldown = new Map();
 
+// Performance monitoring
+let interactionCount = 0;
+let errorCount = 0;
+const startTime = Date.now();
+
 async function walk(dir) {
   const files = await fs.readdir(dir, { withFileTypes: true });
   const results = [];
@@ -154,12 +167,15 @@ async function walk(dir) {
 async function loadCommands() {
   const commandsPath = path.join(__dirname, 'commands');
   const commandFiles = await walk(commandsPath);
+  let loadedCount = 0;
+  
   for (const file of commandFiles) {
     try {
       const command = require(file);
       if (command.data && command.execute) {
         client.commands.set(command.data.name, command);
         console.log(`[INFO] Đã tải lệnh: ${command.data.name} từ ${file}`);
+        loadedCount++;
       } else {
         console.warn(`[WARN] Lệnh không hợp lệ: ${file}`);
       }
@@ -167,13 +183,25 @@ async function loadCommands() {
       console.error(`[ERROR] Lỗi khi tải lệnh ${file}:`, error);
     }
   }
+  
+  console.log(`[INFO] Đã tải ${loadedCount} lệnh thành công`);
 }
 
 async function setDynamicStatus() {
   try {
     const totalUsers = client.guilds.cache.reduce((a, g) => a + g.memberCount, 0);
     const totalGuilds = client.guilds.cache.size;
-    client.user.setActivity(`/help | ${totalGuilds} sv | ${totalUsers} thành viên`, { type: ActivityType.Watching });
+    const uptime = Math.floor((Date.now() - startTime) / 1000 / 60); // minutes
+    
+    const statuses = [
+      `/help | ${totalGuilds} sv | ${totalUsers} thành viên`,
+      `🎫 Ticket System v2.0 | Uptime: ${uptime}m`,
+      `💰 Shop System | ${interactionCount} interactions`,
+      `⚡ Performance: ${errorCount} errors`
+    ];
+    
+    const status = statuses[Math.floor(Date.now() / 30000) % statuses.length];
+    client.user.setActivity(status, { type: ActivityType.Watching });
   } catch (error) {
     console.error('[INDEX DEBUG] Lỗi khi cập nhật status:', error);
   }
@@ -181,22 +209,33 @@ async function setDynamicStatus() {
 
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Bot đã đăng nhập: ${client.user.tag}`);
-  console.log('🎫 Hệ thống ticket cải tiến đã được tích hợp');
+  console.log('🎫 Hệ thống ticket cải tiến v2.0 đã được tích hợp');
+  console.log('⚡ Database performance optimizations enabled');
+  
   await loadCommands();
   await setDynamicStatus();
-  setInterval(setDynamicStatus, 60 * 1000);
+  setInterval(setDynamicStatus, 30 * 1000); // 30 seconds
+  
+  // Performance monitoring
+  setInterval(() => {
+    const memUsage = process.memoryUsage();
+    console.log(`[PERFORMANCE] Memory: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB | Interactions: ${interactionCount} | Errors: ${errorCount}`);
+  }, 5 * 60 * 1000); // 5 minutes
 });
 
 const messageCreate = require('./events/messageCreate');
 const { shopHandler } = require('./utils/shopHandler');
-// Import hệ thống ticket cải tiến
+// Import hệ thống ticket cải tiến v2.0
 const { handleTicketInteraction } = require('./utils/ticketSystem.cjs');
 const { handleTicketUIInteraction } = require('./utils/ticketSetupUI');
 
 client.on(Events.InteractionCreate, async interaction => {
+  interactionCount++;
+  
   try {
     const interactionKey = `${interaction.user.id}:${interaction.commandName || interaction.customId || 'unknown'}`;
     const cooldownTime = interactionCooldown.get(interactionKey);
+    
     if (cooldownTime && Date.now() < cooldownTime) {
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
@@ -206,7 +245,7 @@ client.on(Events.InteractionCreate, async interaction => {
               title: '⏳ Vui Lòng Chờ',
               description: `Bạn đang thao tác quá nhanh! Vui lòng thử lại sau ${Math.ceil((cooldownTime - Date.now()) / 1000)} giây.`,
               thumbnail: { url: 'https://cdn-icons-png.flaticon.com/512/4332/4332637.png' },
-              footer: { text: 'Shop System', icon_url: 'https://cdn-icons-png.flaticon.com/512/4332/4332637.png' },
+              footer: { text: 'Shop System v2.0', icon_url: 'https://cdn-icons-png.flaticon.com/512/4332/4332637.png' },
               timestamp: new Date().toISOString(),
             },
           ],
@@ -215,9 +254,11 @@ client.on(Events.InteractionCreate, async interaction => {
       }
       return;
     }
+    
     interactionCooldown.set(interactionKey, Date.now() + 2000);
     setTimeout(() => interactionCooldown.delete(interactionKey), 2000);
 
+    // Nuke interactions
     if (
       interaction.isButton() &&
       (interaction.customId === 'confirm_nuke' || interaction.customId === 'cancel_nuke')
@@ -225,6 +266,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (await handleNukeInteraction(interaction, db)) return;
     }
 
+    // Chat input commands
     if (interaction.isChatInputCommand()) {
       const command = client.commands.get(interaction.commandName);
       if (!command) {
@@ -233,6 +275,9 @@ client.on(Events.InteractionCreate, async interaction => {
         }
         return;
       }
+      
+      console.log(`[COMMAND] ${interaction.user.tag} used /${interaction.commandName} in ${interaction.guild?.name || 'DM'}`);
+      
       if (command.execute.length >= 2) {
         await command.execute(interaction, db);
       } else {
@@ -241,6 +286,7 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    // Component interactions (buttons, selects, modals, etc.)
     if (
       interaction.isButton() ||
       interaction.isStringSelectMenu() ||
@@ -249,8 +295,9 @@ client.on(Events.InteractionCreate, async interaction => {
       interaction.isRoleSelectMenu() ||
       interaction.isUserSelectMenu()
     ) {
-      console.log(`[INTERACTION] Xử lý ${InteractionType[interaction.type]}: ${interaction.customId || 'N/A'} bởi ${interaction.user.id} trong guild ${interaction.guild?.id}`);
+      console.log(`[INTERACTION] Xử lý ${InteractionType[interaction.type]}: ${interaction.customId || 'N/A'} bởi ${interaction.user.tag} trong ${interaction.guild?.name || 'DM'}`);
 
+      // Deprecated qrHandler
       if (interaction.customId === 'qrHandler') {
         if (!interaction.replied && !interaction.deferred) {
           await interaction.reply({
@@ -261,18 +308,28 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
-      // Xử lý theo thứ tự ưu tiên
-      if (await handleQRMenu(interaction, db)) return;
-      if (await handleTicketUIInteraction(interaction, db)) return;
-      
-      // Sử dụng hệ thống ticket cải tiến
-      if (await handleTicketInteraction(interaction, db)) {
-        console.log(`[TICKET] Ticket interaction handled: ${interaction.customId}`);
-        return;
-      }
-      
-      if (await shopHandler(interaction, db)) return;
+      // Xử lý theo thứ tự ưu tiên - handlers return true nếu đã xử lý
+      const handlers = [
+        { name: 'QR Menu', handler: () => handleQRMenu(interaction, db) },
+        { name: 'Ticket UI', handler: () => handleTicketUIInteraction(interaction, db) },
+        { name: 'Ticket System v2.0', handler: () => handleTicketInteraction(interaction, db) },
+        { name: 'Shop Handler', handler: () => shopHandler(interaction, db) },
+      ];
 
+      for (const { name, handler } of handlers) {
+        try {
+          if (await handler()) {
+            console.log(`[SUCCESS] ${name} handled interaction: ${interaction.customId}`);
+            return;
+          }
+        } catch (error) {
+          console.error(`[ERROR] ${name} failed to handle interaction:`, error);
+          errorCount++;
+          // Continue to next handler
+        }
+      }
+
+      // Duel command special handling
       const duelCommand = client.commands.get('duel');
       if (
         duelCommand &&
@@ -284,39 +341,58 @@ client.on(Events.InteractionCreate, async interaction => {
           interaction.customId.startsWith('decline_duel_')
         )
       ) {
-        await duelCommand.handleInteraction(interaction, db);
-        return;
+        try {
+          await duelCommand.handleInteraction(interaction, db);
+          console.log(`[SUCCESS] Duel command handled interaction: ${interaction.customId}`);
+          return;
+        } catch (error) {
+          console.error('[ERROR] Duel command failed:', error);
+          errorCount++;
+        }
       }
 
-      // Hạn chế double reply/update
+      // Fallback - no handler processed this interaction
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: '❌ Tương tác không được hỗ trợ!', ephemeral: true });
+        await interaction.reply({ 
+          content: '❌ Tương tác không được hỗ trợ!', 
+          ephemeral: true 
+        });
       }
       return;
     }
 
     // Fallback cho loại interaction không được hỗ trợ
     if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: '❌ Tương tác không được hỗ trợ!', ephemeral: true });
+      await interaction.reply({ 
+        content: '❌ Loại tương tác này không được hỗ trợ!', 
+        ephemeral: true 
+      });
     }
+    
   } catch (error) {
+    errorCount++;
+    
     // Đúng chuẩn: Không cố reply lần nữa nếu đã handled hoặc lỗi đã hết hạn
     const errorCode = error.code || error?.rawError?.code;
     if (errorCode === 10062 || errorCode === 40060) {
       console.warn('[WARN] Interaction expired or already handled:', errorCode, error.message);
       return;
     }
+    
     // Các lỗi khác thì báo lỗi ra log và gửi thông báo cho user nếu còn chưa handled
     console.error('[ERROR] Xử lý interaction:', {
       type: InteractionType[interaction.type],
       customId: interaction.customId || 'N/A',
       commandName: interaction.commandName || 'N/A',
       userId: interaction.user.id,
+      userTag: interaction.user.tag,
       guildId: interaction.guild?.id,
+      guildName: interaction.guild?.name,
       error: error.message,
       stack: error.stack,
       timestamp: new Date().toISOString(),
     });
+    
     try {
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
@@ -325,8 +401,15 @@ client.on(Events.InteractionCreate, async interaction => {
               color: 0xE74C3C,
               title: '❌ Lỗi Hệ Thống',
               description: 'Đã xảy ra lỗi khi xử lý tương tác. Vui lòng thử lại sau.',
+              fields: [
+                {
+                  name: '🔧 Thông tin lỗi',
+                  value: `Loại: ${InteractionType[interaction.type]}\nID: \`${interaction.customId || interaction.commandName || 'N/A'}\``,
+                  inline: false
+                }
+              ],
               thumbnail: { url: 'https://cdn-icons-png.flaticon.com/512/4332/4332637.png' },
-              footer: { text: 'Shop System', icon_url: 'https://cdn-icons-png.flaticon.com/512/4332/4332637.png' },
+              footer: { text: 'Ticket System v2.0', icon_url: 'https://cdn-icons-png.flaticon.com/512/4332/4332637.png' },
               timestamp: new Date().toISOString(),
             },
           ],
@@ -343,19 +426,47 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-
 client.on('messageCreate', async msg => {
   console.log(`[INDEX DEBUG] messageCreate triggered for message ${msg.id} in channel ${msg.channel.id} at ${new Date().toISOString()}`);
   try {
     await messageCreate(msg, db);
   } catch (error) {
     console.error('[INDEX ERROR] Xử lý messageCreate:', error);
+    errorCount++;
   }
+});
+
+// Error handling for uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('[FATAL] Uncaught Exception:', error);
+  errorCount++;
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+  errorCount++;
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('[INFO] Received SIGINT, shutting down gracefully...');
+  db.close();
+  client.destroy();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('[INFO] Received SIGTERM, shutting down gracefully...');
+  db.close();
+  client.destroy();
+  process.exit(0);
 });
 
 // Log to confirm listener registration
 console.log('[INDEX DEBUG] Registered messageCreate listener');
+console.log('[INDEX DEBUG] Registered error handlers');
 
 client.login(process.env.TOKEN).catch(error => {
   console.error('[ERROR] Đăng nhập bot thất bại:', error);
+  process.exit(1);
 });
