@@ -1,4 +1,4 @@
-import {
+const {
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
@@ -8,13 +8,9 @@ import {
   TextInputStyle,
   PermissionFlagsBits,
   ChannelType,
-} from 'discord.js';
-import { promises as fs } from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+} = require('discord.js');
+const fs = require('fs').promises;
+const path = require('path');
 
 // Constants
 const TICKET_ICON = 'https://cdn-icons-png.flaticon.com/512/4332/4332637.png';
@@ -1049,4 +1045,4 @@ async function getTicketHistory(ticketId) {
   }
 }
 
-export { handleTicketInteraction };
+module.exports = { handleTicketInteraction };
